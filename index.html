@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+        <style>
+            svg{
+                display:inline-block;
+            }
+        </style>
+    </head>
+    <body>
+        <p>
+            <input id="type_manual" type="radio" name="dataset_type" value="manual" checked="checked"/>
+            Manual:
+            <input type="text" id="dataset_manual" value="[[0,0,0], [1,0,0], [2,0,0], [3,0,0], [0,1,0], [1,1,6], [2,1,4], [3,1,0], [0,2,0], [1,2,4], [2,2,6], [3,2,0], [0,3,0], [1,3,0], [2,3,0], [3,3,0]]"/>
+            <br/>
+            <input id="type_random" type="radio" name="dataset_type" value="random"/>
+            Random:
+            <input type="text" id="dataset_random" value="20"/> points
+            <br/>
+            <input id="type_cosine" type="radio" name="dataset_type" value="cosine"/>
+            Cosine plane:
+            <input type="text" id="dataset_cosine" value="20"/> density
+            <br/>
+            <input id="show_triangles" type="checkbox"/>
+            show gradient outlines
+        </p>
+        <script src="http://d3js.org/d3.v3.min.js"></script>
+        <script src="delaunay.js"></script>
+        <script>
+            var w = 400,
+                h = 400;
+            var colors = [
+                [0.00, "#00f"],
+                [0.33, "#0f0"],
+                [0.66, "#f00"],
+                [1.00, "#fff"],
+            ];
+            var SHOW_TRIANGLES = document.getElementById("show_triangles").checked;
+
+            //calculate the heatmap paths
+            function gradient_paths(data){
+
+                //get min/max values
+                var max_x = d3.max(data, function(d){ return d[0]; }),
+                    max_y = d3.max(data, function(d){ return d[1]; }),
+                    min_z = d3.min(data, function(d){ return d[2]; }),
+                    max_z = d3.max(data, function(d){ return d[2]; });
+
+                //scale points
+                var X = d3.scale.linear()
+                    .domain([0, max_x])
+                    .range([0, w]);
+                var Y = d3.scale.linear()
+                    .domain([0, max_y])
+                    .range([0, h]);
+
+                //translate z values into colors
+                var z_domain = [], color_range = [];
+                for(var z = 0; z < colors.length; z++){
+                    z_domain.push((max_z - min_z) * colors[z][0] + min_z);
+                    color_range.push(colors[z][1]);
+                }
+                var Z = d3.scale.linear()
+                    .domain(z_domain)
+                    .range(color_range);
+
+                //scale line
+                var line = d3.svg.line()
+                    .x(function(d){ return d[0]; })
+                    .y(function(d){ return d[1]; })
+                    .interpolate("linear");
+
+                //calculate stops for the gradients based on the color domain
+                function calc_stops(z1, z2){
+                    var z_list = [];
+
+                    //no gradient, so just one stop
+                    if(z1 === z2){
+                        z_list.push({"color": Z(z1), "offset": 1});
+                    }
+
+                    //positive gradient
+                    else if(z2 > z1){
+                        z_list.push({"color": Z(z1), "offset": 0});
+                        //add stops for all the color shifts
+                        for(var i = 0; i < z_domain.length; i++){
+                            if(z_domain[i] <= z1 || z_domain[i] >= z2){
+                                continue;
+                            }
+                            z_list.push({
+                                "color": Z(z_domain[i]),
+                                "offset": (z_domain[i] - z1) / (z2 - z1),
+                            });
+                        }
+                        z_list.push({"color": Z(z2), "offset": 1});
+                    }
+
+                    //negative gradient
+                    else if(z2 < z1){
+                        z_list.push({"color": Z(z1), "offset": 0});
+                        //add stops for all the color shifts
+                        for(var i = z_domain.length - 1; i >= 0; i--){
+                            if(z_domain[i] >= z1 || z_domain[i] <= z2){
+                                continue;
+                            }
+                            z_list.push({
+                                "color": Z(z_domain[i]),
+                                "offset": (z_domain[i] - z1) / (z2 - z1),
+                            });
+                        }
+                        z_list.push({"color": Z(z2), "offset": 1});
+                    }
+                    return z_list;
+                }
+
+                //calculate gradients from three points
+                var id_counter = 0;
+                function calc_gradients(p1, p2, p3, no_scale){
+                    var result = [];
+
+                    //transform to scale
+                    if(!no_scale){
+                        p1 = [X(p1[0]), Y(p1[1]), p1[2]];
+                        p2 = [X(p2[0]), Y(p2[1]), p2[2]];
+                        p3 = [X(p3[0]), Y(p3[1]), p3[2]];
+                    }
+
+                    //no gradient if all the points are the same z
+                    if(p1[2] === p2[2] && p1[2] === p3[2]){
+                        result.push({
+                            "path": line([p1, p2, p3, p1]),
+                            "id": "grad" + id_counter,
+                            "start": [p1[0], p1[1]],
+                            "end": [p1[0], p1[1]],
+                            "stops": calc_stops(p1[2], p1[2]),
+                        });
+                    }
+
+                    //single gradient if two points are same z
+                    else if(p1[2] === p2[2] || p1[2] === p3[2] || p2[2] === p3[2]){
+
+                        //make points z1 and z2 be along the same-z line
+                        if(p1[2] === p2[2]){
+                            var z1 = p1;
+                            var z2 = p2;
+                            var z3 = p3;
+                        }
+                        else if(p1[2] === p3[2]){
+                            var z1 = p1;
+                            var z2 = p3;
+                            var z3 = p2;
+                        }
+                        else if(p2[2] === p3[2]){
+                            var z1 = p2;
+                            var z2 = p3;
+                            var z3 = p1;
+                        }
+
+                        //find line perpendicular to same-z line
+                        //(vertical special case)
+                        if(z2[0] - z1[0] < 0.00001 && z2[0] - z1[0] > -0.00001){
+                            var intersect_x = z1[0];
+                            var intersect_y = z3[1];
+                        }
+                        //(horizontal special case)
+                        else if(z2[1] - z1[1] < 0.00001 && z2[1] - z1[1] > -0.00001){
+                            var intersect_x = z3[0];
+                            var intersect_y = z1[1];
+                        }
+                        //(normal case)
+                        else{
+                            var m1 = (z2[1] - z1[1]) / (z2[0] - z1[0]);
+
+                            //find point where same-z line intersects
+                            var intersect_x = (z3[1] - z1[1] + (m1 * z1[0]) + (z3[0] / m1)) / (m1 + 1 / m1);
+                            var intersect_y = (-1 / m1) * intersect_x + (z3[0] / m1) + z3[1];
+                        }
+
+                        //make gradient follow the perpendiular line segment
+                        result.push({
+                            "path": line([p1, p2, p3, p1]),
+                            "id": "grad" + id_counter,
+                            "start": [z3[0], z3[1]],
+                            "end": [intersect_x, intersect_y],
+                            "stops": calc_stops(z3[2], z1[2]),
+                        });
+                    }
+
+                    //split up triangle into two smaller triangles
+                    //(so the linear gradients match up)
+                    else{
+                        //sort points based on z value
+                        var p123 = [p1, p2, p3].sort(function(a, b){
+                            if(a[2] < b[2]){
+                                return true;
+                            }
+                            return false;
+                        });
+                        var z1 = p123[0],
+                            z2 = p123[1],
+                            z3 = p123[2];
+
+                        //determine location of z2 value on the z1-to-z3 line
+                        //(vertical case)
+                        if(z3[0] - z1[0] < 0.00001 && z3[0] - z1[0] > -0.00001){
+                            var m = (z3[2] - z1[2]) / (z3[1] - z1[1]);
+                            var b = z1[2] - m * z1[1];
+                            var intersect_x = z1[0];
+                            var intersect_y = (z2[2] - b) / m;
+                        }
+                        //(horizontal case)
+                        else if(z3[1] - z1[1] < 0.00001 && z3[1] - z1[1] > -0.00001){
+                            var m = (z3[2] - z1[2]) / (z3[0] - z1[0]);
+                            var b = z1[2] - m * z1[0];
+                            var intersect_x = (z2[2] - b) / m;
+                            var intersect_y = z1[1];
+                        }
+                        //(normal case)
+                        else{
+                            var intersect_x = (z3[0] - z1[0]) / (z3[2] - z1[2]) * (z2[2] - z3[2]) + z3[0];
+                            var intersect_y = (z3[1] - z1[1]) / (z3[2] - z1[2]) * (z2[2] - z3[2]) + z3[1];
+                        }
+
+                        //get gradients for two smaller triangles
+                        result = result.concat(calc_gradients(z1, z2, [intersect_x, intersect_y, z2[2]], true));
+                        result = result.concat(calc_gradients(z2, z3, [intersect_x, intersect_y, z2[2]], true));
+                    }
+                    id_counter += 1;
+                    return result;
+                }
+
+                //get the Delaunay triangles
+                var delaunay_indexes = Delaunay.triangulate(data);
+
+                //Go through grid and calculate gradients for each triangle
+                var result = [];
+                for(var i = 0; i < delaunay_indexes.length; i+=3){
+                    result = result.concat(calc_gradients(
+                        data[delaunay_indexes[i + 0]],
+                        data[delaunay_indexes[i + 1]],
+                        data[delaunay_indexes[i + 2]]
+                    ));
+                }
+                return result;
+            }
+
+            //insert the heatmap
+            function heatmap(data, location){
+                var paths = gradient_paths(data);
+
+                //add the gradients
+                var grads = location.selectAll("linearGradient")
+                    .data(paths)
+                  .enter().append("linearGradient")
+                    .attr("id", function(d){ return d.id; })
+                    .attr("x1", function(d){ return d.start[0]; })
+                    .attr("y1", function(d){ return d.start[1]; })
+                    .attr("x2", function(d){ return d.end[0]; })
+                    .attr("y2", function(d){ return d.end[1]; })
+                    .attr("gradientUnits", "userSpaceOnUse");
+
+                //add the stops for the gradients
+                grads.selectAll("stop")
+                    .data(function(d){ return d.stops; })
+                  .enter().append("stop")
+                    .attr("offset", function(d){ return d.offset; })
+                    .attr("stop-color", function(d){ return d.color; });
+
+                //add the triangles and associate them with their gradients
+                location.selectAll("path")
+                    .data(paths)
+                  .enter().append("path")
+                    .attr("d", function(d){ return d.path; })
+                    .style("stroke-width", 1)
+                    .style("stroke", function(d){ return SHOW_TRIANGLES ? "#000" : "url(#" + d.id + ")"; })
+                    .style("fill", function(d){ return "url(#" + d.id + ")"; });
+            }
+
+            //generate some random data
+            function dataset_random(size){
+                var d = [[0,0,0], [1,0,0], [0,1,0], [1,1,0]]; //corners are always zero
+                for(var i = 0; i < size; i++){
+                    d.push([Math.random(), Math.random(), Math.random() * 50]);
+                }
+                return d;
+            }
+
+            //generate a cosine plane
+            function dataset_cosine(density){
+                var d = [];
+                for(var i = 0; i < density; i++){
+                    for(var j = 0; j < density; j++){
+                        //z = cos(sqrt(x^2 + y^2))
+                        var x = i / density * Math.PI * 50,
+                            y = j / density * Math.PI * 50;
+                        var z = Math.cos(Math.pow(Math.pow(x, 2) + Math.pow(y, 2), 0.5));
+                        d.push([i, j, z]);
+                    }
+                }
+                return d;
+            }
+
+            //compare the heatmap to a simple circle grid
+            function circle_grid(data, location){
+                //calculate scales
+                var max_x = d3.max(data, function(d){ return d[0]; }),
+                    max_y = d3.max(data, function(d){ return d[1]; }),
+                    min_z = d3.min(data, function(d){ return d[2]; }),
+                    max_z = d3.max(data, function(d){ return d[2]; });
+                var X = d3.scale.linear()
+                    .domain([0, max_x])
+                    .range([0, w]);
+                var Y = d3.scale.linear()
+                    .domain([0, max_y])
+                    .range([0, h]);
+                var R = d3.scale.linear()
+                    .domain([min_z, max_z])
+                    .range([1, 10]);
+
+                location.selectAll("circle")
+                    .data(data)
+                  .enter().append("circle")
+                    .attr("cx", function(d){ return X(d[0]); })
+                    .attr("cy", function(d){ return Y(d[1]); })
+                    .attr("r", function(d){ return R(d[2]); })
+                    .attr("fill", "steelblue");
+            }
+
+            //TODO: interpolate based on chart size, not dataset size
+            var svg1 = d3.select("body").append("svg")
+                .attr("id", "heatmap")
+                .attr("width", w)
+                .attr("height", h);
+            var svg2 = d3.select("body").append("svg")
+                .attr("id", "spots")
+                .attr("width", w)
+                .attr("height", h);
+
+            //event that fires when there are data updates
+            function change_type(){
+                //get dataset
+                if(document.getElementById("type_manual").checked){
+                    var dataset = JSON.parse(document.getElementById("dataset_manual").value);
+                }
+                else if(document.getElementById("type_random").checked){
+                    var dataset = dataset_random(parseInt(document.getElementById("dataset_random").value));
+                }
+                else if(document.getElementById("type_cosine").checked){
+                    var dataset = dataset_cosine(parseInt(document.getElementById("dataset_cosine").value));
+                }
+
+                //remove existing data
+                document.getElementById("heatmap").innerHTML = "";
+                document.getElementById("spots").innerHTML = "";
+
+                //update charts
+                heatmap(dataset, svg1);
+                circle_grid(dataset, svg2);
+            }
+
+            //event that fires when you want to see the triangle outlines
+            function change_lines(){
+                SHOW_TRIANGLES = document.getElementById("show_triangles").checked;
+                change_type();
+            }
+
+            //bind change events
+            document.getElementById("type_manual").addEventListener("change", change_type);
+            document.getElementById("type_random").addEventListener("change", change_type);
+            document.getElementById("type_cosine").addEventListener("change", change_type);
+            document.getElementById("dataset_manual").addEventListener("blur", change_type);
+            document.getElementById("dataset_random").addEventListener("blur", change_type);
+            document.getElementById("dataset_cosine").addEventListener("blur", change_type);
+            document.getElementById("show_triangles").addEventListener("change", change_lines);
+
+            //initialize
+            change_type();
+
+        </script>
+    </body>
+</html>
+
